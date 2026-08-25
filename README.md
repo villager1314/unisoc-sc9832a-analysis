@@ -132,7 +132,7 @@ wpa_supplicant ...
 
 镜像体积超过 GitHub 普通 Git 对象 100 MB 限制，因此使用 GitHub Release 发布已经校验的分区归档。`userdata` 与 `cache` 未读取，不在归档内。
 
-NV、Persist、Miscdata 等分区可能包含 IMEI、序列号、Wi-Fi/蓝牙 MAC、射频校准和其他设备唯一数据，不能以明文公开。它们位于单独的 AES-256 加密包中，密码不写入公开仓库；刷写前必须核对机型、分区名、长度和 SHA-256。
+NV、Persist、Miscdata 等分区可能包含 IMEI、序列号、Wi-Fi/蓝牙 MAC、射频校准和其他设备唯一数据，因此不作为公开 Release 资产发布。本地仍保留加密备份；公开包仅包含可共享的通用固件分区。
 
 ## 许可
 
