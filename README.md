@@ -1,81 +1,140 @@
-# 展讯 SC9832A 手机 Root 研究心路历程
+# UNISOC/Spreadtrum SC9832A（贝尔丰 BF T61）研究记录
 
-在一台展讯平台 Android 5.1 手机上，我把常用一键 Root、漏洞型正规 Root、Dirty Cow、需要偏移量的内核提权、Bootloader 解锁、深刷/下载模式这几条路从浅到深全部走了一遍。下面按时间线还原每一层的尝试、失败现象与根因，并附上涉及到的每一款工具与漏洞的出处。
+本仓库记录一台贝尔丰 `BF T61 / sp9832a_3h10cmcc` 的固件识别、展讯下载链、分区备份、启动校验、FactoryTest/Calibration 工程模式、Root 路线和 Wi‑Fi 故障定位过程。内容以实机读取和离线反编译结果为准。
 
-## 手机型号、处理器等信息
+> **风险提示**：SC9832A 不同板级的 FDL、内存地址、分区表和签名链不能混用。写错 `splloader`、`uboot`、NV 或校准分区可能造成无基带、丢失设备标识或永久黑砖。刷写前应至少备份 SPL/U-Boot、Boot/Recovery、NV、Persist、Miscdata 和分区表，并校验哈希。
 
-| 项目 | 信息 |
+## 目标设备
+
+| 项目 | 实测值 |
 | --- | --- |
-| 平台 | 展讯 / 紫光展锐（Spreadtrum / Unisoc） |
-| 型号标识 | `sp9832a_3h10cmcc` |
-| 处理器 | SC9832A，4 × ARM Cortex-A7 @ 1.3–1.5 GHz，Mali-400MP2，28nm 制程 |
-| CPU 架构 | `armv7l`（32 位 ARM） |
-| 内核版本 | Linux `3.10.65` |
-| 系统版本 | Android 5.1 |
-| SELinux | enforcing |
-| 默认 shell | 未提权的 `shell` 用户 |
+| 品牌/型号 | 贝尔丰 BF T61 |
+| 产品/设备 | `sp9832a_3h10_5mvoltecmcc` / `sp9832a_3h10cmcc` |
+| SoC | Spreadtrum SC9832A，ARMv7 32 位 |
+| Android | 5.1 |
+| 内核 | Linux 3.10.65 |
+| 启动方案 | Legacy Android boot image，非 A/B |
+| 下载模式 | SPRD3/BROM、SPRD4/AutoD |
+| SELinux | Enforcing（正常系统） |
 
-SC9832A 是展讯面向入门级 4G 手机的四核芯片 [SC9832A 规格](https://devicebeast.com/processor/spreadtrum-sc9832a)。这台机器纸面上"内核很老、漏洞很多"，实际却因厂商定制而处处封闭，是后续所有尝试接连受挫的大背景。
+## 研究历程
 
-## 第一层：市面上常见的一键 Root 工具
+### 1. 识别设备和板级
 
-先从最省事的一键 Root 工具入手，它们的共同思路是把 `su` 与授权管理程序写进 `/system` 分区，靠自动化脚本完成提权。结果全部失败：要么直接报"不支持"，要么提示成功但重启后 root 丢失、授权管理消失。
+早期仅凭 SC9832A、Android 5.1 和 Linux 3.10.65 搜索通用刷机包，无法确认板级。ADB、USB 枚举和实机分区最终确认设备为贝尔丰 BF T61，产品标识为：
 
-- **360 一键 Root / 360 超级 Root**：国产一键 Root 代表，借助修改 `install-recovery.sh`、利用 init 阶段不受 SELinux 约束的窗口完成提权并写入授权模块 [360 一键 Root 官方说明](http://shouji.360.cn/root/relief.html)。这种"改 `/system`"的老方案在厂商深度定制的 ROM 上成功率低，版本越新越容易失败 [360 Root 原理](https://blog.csdn.net/hu3167343/article/details/43311779)。
-- **百度一键 Root**：同样是把 `su` 与授权管理写进 `/system`，依赖的漏洞主要是 `zergRush`（Android 2.2–2.3.6）、`Gingerbreak`、`psneuter` 这类上古漏洞 [百度一键 Root 原理](https://m.duote.com/android/962643.html)，覆盖面仅到 Android 4.4 上下，对 3.10 内核 + Android 5.1 基本失效。
-- **KingRoot**：知名一键 Root，授权管理端叫 KingUser。其主要利用集中在 Android 5/6 及更早的旧漏洞，之后成功率断崖式下降 [KingRoot FAQ](https://kingroot.ru/faq.html)。
-- **KingoRoot**：分 PC 版与 APK 版，同样靠打包系统漏洞取 root。官方 FAQ 明确两个排除条件：Android 5.1 以上"暂不支持"，以及"Bootloader 被厂商锁定就无能为力" [KingoRoot FAQ](https://www.kingoapp.com/faq.htm)。
+```text
+sp9832a_3h10_5mvoltecmcc
+sp9832a_3h10cmcc
+```
 
-这一层的共同死因：旧漏洞已在这台内核补丁等级上闭合、`/system` 受只读或 dm-verity 保护导致 `su` 写不进去、Bootloader 被锁定，即使重启也保不住 root。
+同为 SC9832A 的 BF T66、`SP9832A_3H10_VOLTE` 或其他 `3h10` 固件也不能因此直接混刷，LCD、触摸、射频、存储布局和签名配置仍可能不同。
 
-## 第二层：漏洞型"正规" Root 工具
+### 2. Android 运行期 Root 尝试
 
-一键工具失效后，转向直接封装内核漏洞利用链的正规工具，结果卡在同一个门槛——**补丁等级太高**。
+先后研究或测试了 Framaroot、z4root、SuperOneClick/zergRush、Dirty COW、KingRoot 及若干旧式一键 Root：
 
-- **Framaroot**：纯 APK 一键 Root，内置多个以《指环王》角色命名的漏洞利用（Gandalf、Boromir、Pippin、Legolas、Aragorn、Sam、Frodo、Gimli），分别对应不同内核与机型 [Framaroot 漏洞列表](https://framaroot.en.malavida.com/android/)。它面向的大多是 2014 年前后的 Android 4.x 内核，放到 3.10.65 上已无适用 exploit。
-- **PowerRoot**：与 Framaroot 同类的漏洞注入式一键 Root 工具，公开资料极少，其依赖的漏洞链早已被高版本补丁堵死，本机同样不适用。
-- **PingPongRoot**：对应 [CVE-2015-3636](https://pwnies.com/pingpongroot-cve-2015-3636/)，是 Keen Team 提交、Black Hat USA 2015 公开的内核 Use-After-Free 提权漏洞，曾获 Pwnie Awards 2015 "最佳提权漏洞"，可绕过 PXN [PingPongRoot exploit 仓库](https://github.com/android-rooting-tools/libpingpong_exploit)。它的支持范围止于部分 Android ≥4.3 设备，且官方修复随 2015 年内核补丁下发，这台"补丁等级更高"的机器已修掉它。
+- Framaroot 判断设备不适配其内置漏洞；
+- z4root 在执行临时/永久 Root 时崩溃；
+- zergRush 能识别 Android 2.2/2.3 路线，但在本机失败；
+- DirtyCow Checker 与多个 PoC 均未形成可验证的文件替换；
+- 普通 `adb shell` 中 `su` 返回 `permission denied`。
 
-## 第三层：Dirty Cow 与"设备已被修复"的确认
+这些结果只证明相应实现没有在本固件上形成可靠利用链，不能仅凭内核版本号断言某个漏洞必然存在或已修复。
 
-随后转向当时最有希望的内核漏洞 **Dirty Cow（CVE-2016-5195）**：Linux 2.6.22–4.8.3 的写时复制竞态漏洞，通过 `madvise(MADV_DONTNEED)` 与 `/proc/self/mem` 写入的竞态，覆盖本应只读的内存映射，进而篡改只读系统文件。
+### 3. 展讯下载链和分区备份
 
-先编译运行 [timwr/CVE-2016-5195](https://github.com/timwr/CVE-2016-5195)，用 `dirtycow` 覆盖 `/system/bin/run-as`，期望篡改后的 `run-as` 执行 `setresuid(0,0,0)` 提权。又试了思路更完整的 [GetRoot-Android-DirtyCow](https://github.com/timwr/CVE-2016-5195)，替换 `run-as` 后导出并改写 SELinux 策略与 `init`、重载策略挂载 `su` 镜像。
+实机可以进入 SPRD3/BROM 与 SPRD4/AutoD。通用或其他机型的 FDL 即使能上传 FDL1，也可能在切换 FDL2 时超时；必须同时匹配芯片代际、DDR 初始化、存储控制器和加载地址。
 
-两个方案的共同结果是**无法修改目标文件**：替换程序跑完后手动执行 `run-as -s2`，返回 `Package '-s2' is unknown`，说明 `run-as` 仍是原始版本、从未被真正写入。
+通过已工作的下载链完成了关键分区读取，并保存 SHA-256。当前备份覆盖：
 
-为了确认是"竞态没赢"还是"内核已被封堵"，下载了 **DirtyCow Checker** 这款 app（免 root、直接探测当前内核对 Dirty Cow 的脆弱性，输出 "vulnerable / not vulnerable"）[DirtyCow Checker XDA](https://xdaforums.com/t/dirtycow-checker-app-2-3.3585546/)。检测结论指向：内核已包含 CVE-2016-5195 的修复，**设备已被（厂商以保持版本号不变的反向移植方式）修复**，漏洞实际上已经闭合。
+```text
+splloader  uboot  boot  recovery  system  oem
+prodnv  miscdata  persist  misc
+l_fixnv1  l_fixnv2  l_runtimenv1  l_runtimenv2
+l_modem  l_warm  l_gdsp  l_ldsp  pm_sys
+wcnfdl  wcnmodem  logo  fbootlogo
+```
 
-结合 `dmesg` 还能看到第二个独立障碍：CPU1 几乎全程热插拔关闭，"唤醒 cpu1"后不到十分之一秒就 `CPU1 shutdown`，只有 CPU0 持续工作。Dirty Cow 依赖两个线程在不同核心上真正并行，核心被关掉后攻击退化成单核串行轮转，命中窗口不复存在。同时，SELinux 拦截与 CPU 架构不匹配这两个常见嫌疑也被日志和 `armv7l` 信息排除。一条清晰的因果链由此成立：**目标文件改不动 → Checker 判定已修复 → 外加 CPU1 关闭，竞态无从成形**。
+按约定没有备份 `userdata` 和 `cache`。普通逻辑分区备份也不等于已经备份 eMMC `boot0`、`boot1` 和 RPMB。
 
-## 第四层：需要设备偏移量的内核提权
+### 4. 启动链与签名校验
 
-Dirty Cow 封死后，沿着 Android 历史提权漏洞清单继续排查 iovyroot 与 Bad Binder，结果卡在同一个门槛——**需要具体机型的绝对内核地址/偏移量**。
+对 SPL、U-Boot、Boot 和 Recovery 做字符串、引用和 Ghidra 反编译后，得到以下结论：
 
-- **iovyroot（CVE-2015-1805）**：`fs/pipe.c` 中 pipe 读写未同步造成的 I/O vector 数组越界（`iov array overrun`），影响 Linux 内核 3.16 之前，可造成任意内核内存写 [CVE-2015-1805 分析](https://www.anquanke.com/post/id/83682)。它的 exploit 需要为每台设备预填一组绝对内核地址：`ptmx_fops` 的 `fsync`/`check_flags`、`sidtab`、`policydb`、`selinux_enabled`、`selinux_enforcing` 等 [iovyroot 仓库](https://github.com/dosomder/iovyroot)。这些偏移量只能从对应固件的内核镜像里用 `kallsyms`/IDA Pro 逐项提取。
-- **Bad Binder（CVE-2019-2215）**：Android Binder 驱动里的 Use-After-Free，可本地提权到内核 [NVD CVE-2019-2215](https://nvd.nist.gov/vuln/detail/CVE-2019-2215)。它主要针对 Android 8.x 及以上、3.18/4.4 等较新内核，且公开 exploit 同样需要按具体机型、内核编译调整偏移与内存布局。
+1. SPL 会校验后续 U-Boot 镜像，镜像带有展讯 VLR/RSA 结构；
+2. U-Boot 在正常启动路径校验 Boot/Recovery；
+3. 本机不是 AVB 设备，没有发现 Android Verified Boot 2.0 元数据；
+4. `secure_verify_system` 位于 AutoD/BSL 下载写入路径，不是正常 Android 挂载 `/system` 时的 dm-verity；
+5. 标准 AutoD 写入修改后的裸 `system.img` 仍可能因下载协议的 secure image 包装校验失败。
 
-对这台 32 位、Android 5.1、又拿不到公开固件包的展讯机器来说，这是双重不匹配：要么系统版本不符，要么缺偏移量，而提取偏移量本身又卡在"拿不到固件"上——这条线索直接引出后面的底层路线。
+因此，“System 正常启动时没有 dm-verity”和“下载工具允许任意写 System”是两件不同的事。修改 Boot/Recovery 也不能只重算普通 SHA-1：若启动链强制 RSA 校验，必须保留有效签名或拥有匹配的 OEM 私钥。
 
-## 第五层：展讯深层漏洞解锁 Bootloader
+### 5. FactoryTest 模式
 
-运行期提权全部走不通后，改走"从底层解除校验"的路线：解锁 Bootloader，去掉厂商签名固件校验，再刷入自制 `boot`/`system` 镜像。
+U-Boot 的实机按键映射为：
 
-展讯官方解锁有硬门槛：需要拿设备序列号生成 token，签名后通过 `fastboot flashing unlock_bootloader signature.bin` 发回才能触发 unlock，能否解锁取决于签名私钥是否匹配手机内置 RSA 公钥，冷门机型通常拿不到这条通路 [展讯解锁原理](https://m.bilibili.com/opus/1080829284600250424)。
+- 音量上 + 电源：FactoryTest；
+- 音量下 + 电源：Recovery。
 
-于是转向展讯的深层 BootROM 漏洞：针对 Unisoc BootROM 的 [CVE-2022-38694](https://github.com/TomKing062/CVE-2022-38694_unlock_bootloader) 是一个任意地址写（AAW）漏洞，攻击者可在签名校验完成前覆写函数指针、以 BootROM 权限执行代码，从而绕过校验解锁 Bootloader [NCC Group 分析](https://mutur4.github.io/2026/03/19/cve-2022-38694.html)。这类漏洞本质上是"针对具体芯片批次与 BootROM 版本"的精细适配产物，对这台 SC9832A 没有现成适配，最终**因没有适配的机型而失败**。
+FactoryTest 仍启动 Recovery 内核/ramdisk，但设置 `ro.bootmode=factorytest`。该路径先挂载 `/data` 再启动 adbd，所以 recovery adbd 能读取 `/data/misc/adb/adb_keys` 并完成认证。
 
-## 第六层：深刷模式 BROM 与下载模式 FDL2
+`/system/bin/factorytest` 本身以 UID 0 和完整 capabilities 运行，但它是展讯 MMI 硬件测试界面。其 `system()` 调用主要是固定的 Wi-Fi、蓝牙、音频和日志命令，没有发现公开的任意命令 socket。ADB shell 仍是 UID 2000，`adb root` 会被 production build 拒绝。
 
-最后一层是直接进入底层刷机/下载模式，把固件（尤其是 FDL 加载器）提取出来，为前面的偏移量分析和自制镜像铺路。
+### 6. ENGPC、cmd_services 与 DIAG
 
-- **SPD 下载模式 / SPD3**：展讯的下载（烧录）模式由"USB 连接 + 特定按键组合"触发并维持，PC 端 ResearchDownload / SPD 工具需要依次加载 `fdl1.bin`、`fdl2.bin` 两个加载器，再由它们接管存储读写完成刷写或导出，FDL 文件本身藏在厂商 `.pac` 固件包里 [FDL 提取方法](https://github.com/emtee40/spreadtrum_flash) [ResearchDownload 用法](https://flashguidehub.com/research-download/)。
-- **BROM 深刷模式**：对应 BootROM 阶段的底层下载入口。典型流程是先用 `spd_dump` 进入 brom，再 `fdl fdl1-dl.bin`、`fdl fdl2 ...`、`exec` 逐级拉起 [个人开发记录](https://www.getce.cn/show/252.html)。
+`cmd_services` 是一个很小的本地命令服务：监听 Android abstract socket `cmd_skt`，读取命令，附加 `2>&1`，通过 `popen()` 执行并返回输出。反编译中没有发现认证或命令白名单；如果它由 init 以 root 启动且 shell 可连接，它就是直接的 root 命令桥。
 
-这台机器的现实是：**相关进入流程被厂商阉割**，既无法稳定进入 BROM/深刷模式，也拿不到匹配的 FDL1/FDL2 加载器，导致"提取固件 → 计算偏移量 → 自制可刷镜像"这条最后的通路从入口处就被掐断，**无法提取所需固件**。
+但 FactoryTest 环境中的实际状态是：
 
-## 总结
+```text
+persist.sys.cmdservice.enable=disable
+persist.sys.engpc.disable=1
+```
 
-一层层推进下来，这台机器的每一扇门都被关上：一键 Root 因旧漏洞闭合与 `/system` 保护失效，正规漏洞工具因补丁太高失效，Dirty Cow 因内核已修复 + CPU 热插拔失效，偏移型提权因缺固件无偏移量失效，Bootloader 解锁因无适配机型失效，深刷/下载模式因进入流程被阉割失效。
+FactoryTest 没有启动 `cmd_services`，也不存在 `@cmd_skt`。`engpc` 属于 recovery init 的 `class cali`，而 FactoryTest 只启动 `class factorytest`，因此两种模式不能混为一谈。
 
-最核心的一课是"纸面条件"与"实际条件"的差距：内核 3.10.65 低于 Dirty Cow 官方修复线 3.10.73，`armv7l` 架构也与利用程序完全匹配，从版本号看处处"有戏"，却处处落空。国产厂商"保持版本号不变的反向移植补丁"与"阉割进入流程"的定制，让所有依赖公开版本号判断的攻击都失效。而在基于竞态的提权里，"脚本显示成功"与"真正成功"是两回事——任何不做结果校验的自动化流程，都会把失败包装成成功。
+正常 Android 中打开 Wi-Fi EUT 后曾观察到 `persist.sys.cmdservice.enable=enable`。后续验证重点应是此时是否同时出现 root 身份的 `/system/bin/cmd_services` 和 `@cmd_skt`。
+
+Calibration 模式由 U-Boot 在开机早期与 PC 校准工具通过 USB/UART 握手触发，不是已确认的独立按键组合。ENGPC 是二进制 DIAG 路由器，不是文本 shell；其中包含 NV、寄存器和 efuse 写操作，不应盲目探测。
+
+### 7. Wi-Fi 故障观察
+
+Wi-Fi 曾出现开关失败、重启后仍不可用，但断电并静置较长时间后偶尔恢复。FactoryTest 的 Wi-Fi 测试会主动执行：
+
+```text
+rmmod sprdwl
+insmod /system/lib/modules/sprdwl.ko
+wpa_supplicant ...
+```
+
+因此排障需要同时记录 `dmesg`、模块状态、`wlan0`、固件加载、WCN 状态与 `/data/misc/wifi` 内容。间歇性断电恢复更像 WCN/供电/复位状态卡死或硬件接触问题，不能仅凭 Android 设置界面判断是 ROM 缺文件。
+
+## 已确认结论
+
+- 已识别准确机型和板级标识；
+- 已进入并验证 SPRD3、SPRD4、Recovery 和 FactoryTest；
+- 已读取除 `userdata`、`cache` 之外的主要逻辑分区；
+- 已确认 SPL → U-Boot 及 U-Boot → Boot/Recovery 的签名校验路径；
+- 已确认非 AVB、System 正常挂载路径未见 dm-verity；
+- 已反编译 FactoryTest 与 `cmd_services`，确认二者不是同一服务；
+- 尚未获得可复现、可持久化且不会破坏签名链的 Root 方案。
+
+## 仓库内容
+
+- `README.md`：完整研究历程与当前结论；
+- `docs/`：启动校验、FactoryTest、ENGPC/cmdservice 和诊断记录；
+- `checksums/`：公开镜像及本地备份的 SHA-256；
+- `release-manifest/`：Release 分卷清单、分区范围和恢复注意事项；
+- `sc9832root/`：早期研究材料；其中第三方 APK/压缩包不代表本仓库对其安全性或适配性的认可。
+
+## 分区镜像发布说明
+
+镜像体积超过 GitHub 普通 Git 对象 100 MB 限制，使用 GitHub Release 分卷发布。`userdata` 与 `cache` 未读取，不在归档内。
+
+NV、Persist、Miscdata 等分区可能包含 IMEI、序列号、Wi-Fi/蓝牙 MAC、射频校准和其他设备唯一数据，不能以明文公开。公开包与设备私有加密包会分开提供；刷写前必须核对机型、分区名、长度和 SHA-256。
+
+## 许可
+
+本仓库原创文档和脚本采用 [MIT License](LICENSE)。设备固件、驱动、第三方工具和第三方项目仍归各自权利人所有，不因收录校验值或研究记录而改变其许可。
+
