@@ -125,14 +125,14 @@ wpa_supplicant ...
 - `README.md`：完整研究历程与当前结论；
 - `docs/`：启动校验、FactoryTest、ENGPC/cmdservice 和诊断记录；
 - `checksums/`：公开镜像及本地备份的 SHA-256；
-- `release-manifest/`：Release 分卷清单、分区范围和恢复注意事项；
+- `release-manifest/`：Release 归档清单、分区范围和恢复注意事项；
 - `sc9832root/`：早期研究材料；其中第三方 APK/压缩包不代表本仓库对其安全性或适配性的认可。
 
 ## 分区镜像发布说明
 
-镜像体积超过 GitHub 普通 Git 对象 100 MB 限制，使用 GitHub Release 分卷发布。`userdata` 与 `cache` 未读取，不在归档内。
+镜像体积超过 GitHub 普通 Git 对象 100 MB 限制，因此使用 GitHub Release 发布已经校验的分区归档。`userdata` 与 `cache` 未读取，不在归档内。
 
-NV、Persist、Miscdata 等分区可能包含 IMEI、序列号、Wi-Fi/蓝牙 MAC、射频校准和其他设备唯一数据，不能以明文公开。公开包与设备私有加密包会分开提供；刷写前必须核对机型、分区名、长度和 SHA-256。
+NV、Persist、Miscdata 等分区可能包含 IMEI、序列号、Wi-Fi/蓝牙 MAC、射频校准和其他设备唯一数据，不能以明文公开。它们位于单独的 AES-256 加密包中，密码不写入公开仓库；刷写前必须核对机型、分区名、长度和 SHA-256。
 
 ## 许可
 
