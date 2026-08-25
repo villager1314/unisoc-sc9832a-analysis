@@ -32,13 +32,11 @@ sp9832a_3h10cmcc
 
 ### 2. Android 运行期 Root 尝试
 
-先后研究或测试了 Framaroot、z4root、SuperOneClick/zergRush、Dirty COW、KingRoot 及若干旧式一键 Root：
+先后研究或测试了 Dirty COW、KingRoot 及若干旧式一键 Root：
 
-- Framaroot 判断设备不适配其内置漏洞；
-- z4root 在执行临时/永久 Root 时崩溃；
-- zergRush 能识别 Android 2.2/2.3 路线，但在本机失败；
-- DirtyCow Checker 与多个 PoC 均未形成可验证的文件替换；
-- 普通 `adb shell` 中 `su` 返回 `permission denied`。
+- dirtycow无法替换run-as；
+- root大师 kingroot在执行Root 时重启崩溃；
+- DirtyCow Checker 显示设备被修补；
 
 这些结果只证明相应实现没有在本固件上形成可靠利用链，不能仅凭内核版本号断言某个漏洞必然存在或已修复。
 
