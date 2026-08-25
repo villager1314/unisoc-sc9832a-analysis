@@ -18,9 +18,9 @@ logo.img  fbootlogo.img
 
 这是 7-Zip 分卷格式；虽然当前压缩后只有一个 `.001` 卷，也应从 `.001` 文件打开或解压。解压后原始数据约 2.30 GiB。
 
-## 设备私有 NV 归档
+## 设备私有 NV（不公开）
 
-文件：`BF-T61-SC9832A-device-private-NV.7z`
+本地文件：`BF-T61-SC9832A-device-private-NV.7z`
 
 SHA-256：`8B10F8CF92D266845B8A107DBAED53791C1B0285593F573DF42FD09E972FBA8C`
 
@@ -32,7 +32,7 @@ l_fixnv1.img  l_fixnv2.img
 l_runtimenv1.img  l_runtimenv2.img
 ```
 
-该归档使用 7-Zip AES-256 并加密文件名。密码不写入公开仓库或 Release 说明。上述分区可能包含设备唯一标识、MAC、射频校准和运行时 NV；不能刷入其他设备。
+该归档只保存在研究者本地，不作为 GitHub Release 资产发布。它使用 7-Zip AES-256 并加密文件名。上述分区可能包含设备唯一标识、MAC、射频校准和运行时 NV；不能刷入其他设备。
 
 ## 未包含
 
